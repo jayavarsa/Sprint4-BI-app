@@ -1,0 +1,66 @@
+# =============================================================================
+# Client Overlay: ACME Corp
+# Owner: Jayavarsan (Kubernetes Lead)
+#
+# This is the ONLY file you need to create per new client.
+# Apply: kubectl apply -k k8s/overlays/client-acme/
+# =============================================================================
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Point to shared base manifests
+bases:
+  - ../../base
+
+# ── Namespace ──────────────────────────────────────────────────
+# Creates + targets the client-acme namespace for all resources
+namespace: client-acme
+
+# ── ConfigMap ─────────────────────────────────────────────────
+# Injects client-specific environment variables into pods
+configMapGenerator:
+  - name: client-config
+    literals:
+      - CLIENT_ID=acme                        # Tenant identifier
+      - ENVIRONMENT=production
+
+# ── Patches ───────────────────────────────────────────────────
+# Patch deployment to add client label and scale
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: bi-platform-app
+        labels:
+          app.bi-platform/tenant: "true"       # Label used by CD to discover namespaces
+          app.bi-platform/client: "acme"
+      spec:
+        replicas: 2                             # 2 pods for ACME
+
+  # Patch ingress to set ACME's subdomain
+  - patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: bi-platform-ingress
+      spec:
+        rules:
+          - host: acme.bi-platform.io           # ACME's custom domain
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: bi-platform-svc
+                      port:
+                        number: 80
+
+# ── Image ─────────────────────────────────────────────────────
+# All clients use same image — different configs differentiate them
+images:
+  - name: REGISTRY/bi-platform
+    newName: 123456789.dkr.ecr.us-east-1.amazonaws.com/bi-platform
+    newTag:  latest

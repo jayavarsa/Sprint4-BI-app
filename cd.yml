@@ -1,0 +1,177 @@
+# =============================================================================
+# CD Pipeline — Deploy to Kubernetes
+# Owner: Chaithanya (CI/CD Lead) + Jayavarsan (K8s Lead)
+#
+# Triggers:
+#   - Automatically after CI workflow succeeds on main
+#   - Manual trigger (workflow_dispatch) for emergency deploys
+#
+# Flow:
+#   1. Download image URI from CI
+#   2. Configure kubectl (EKS)
+#   3. Update all client namespaces with new image
+#   4. Verify rollout health
+# =============================================================================
+
+name: CD — Deploy to Kubernetes
+
+on:
+  # Trigger automatically after CI passes on main
+  workflow_run:
+    workflows: ["CI — Build & Push"]
+    types: [completed]
+    branches: [main]
+
+  # Manual deploy — useful for hotfixes or rollbacks
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. latest, abc1234)"
+        required: false
+        default: "latest"
+      target_client:
+        description: "Client namespace to deploy (leave empty to deploy all)"
+        required: false
+        default: ""
+
+env:
+  AWS_REGION:     us-east-1
+  EKS_CLUSTER:    bi-platform-cluster    # Your EKS cluster name
+  ECR_REPOSITORY: bi-platform
+
+jobs:
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    # Only run if CI succeeded (when triggered by workflow_run)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Get image tag ───────────────────────────────────────
+      - name: Download image URI artifact
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: image-uri
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Set image tag
+        id: image
+        env:
+          MANUAL_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            IMAGE_TAG="${MANUAL_TAG:-latest}"
+          elif [ -f image-uri.txt ]; then
+            IMAGE_URI=$(cat image-uri.txt)
+            IMAGE_TAG=$(echo "$IMAGE_URI" | cut -d: -f2)
+          else
+            IMAGE_TAG="latest"
+          fi
+          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Deploying tag: ${IMAGE_TAG}"
+
+      # ── AWS & kubectl setup ─────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name   ${{ env.EKS_CLUSTER }}
+          kubectl cluster-info
+
+      # ── Discover all client namespaces ──────────────────────
+      - name: Get client namespaces
+        id: namespaces
+        run: |
+          # List all namespaces with label app.bi-platform/tenant=true
+          # This is how we know which namespaces are client tenants
+          TARGET="${{ github.event.inputs.target_client }}"
+
+          if [ -n "$TARGET" ]; then
+            echo "Deploying to single namespace: ${TARGET}"
+            NAMESPACES="${TARGET}"
+          else
+            NAMESPACES=$(kubectl get namespaces \
+              -l app.bi-platform/tenant=true \
+              -o jsonpath='{.items[*].metadata.name}')
+            echo "Deploying to all tenant namespaces: ${NAMESPACES}"
+          fi
+
+          echo "list=${NAMESPACES}" >> $GITHUB_OUTPUT
+
+      # ── Rolling deploy to each namespace ───────────────────
+      - name: Deploy to all client namespaces
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG:    ${{ steps.image.outputs.tag }}
+        run: |
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          echo "Deploying image: ${FULL_IMAGE}"
+
+          # Deploy to each namespace
+          for NS in ${{ steps.namespaces.outputs.list }}; do
+            echo ""
+            echo "── Deploying to namespace: ${NS} ──"
+
+            # Update the deployment's image — triggers rolling update
+            kubectl set image deployment/bi-platform-app \
+              bi-platform-app="${FULL_IMAGE}" \
+              --namespace="${NS}"
+
+            echo "✅ Image updated in ${NS}"
+          done
+
+      # ── Verify rollout ──────────────────────────────────────
+      - name: Verify rollout success
+        run: |
+          FAILED_NS=""
+
+          for NS in ${{ steps.namespaces.outputs.list }}; do
+            echo "Waiting for rollout in: ${NS}"
+
+            # Wait up to 3 minutes for rolling update to complete
+            if kubectl rollout status deployment/bi-platform-app \
+                --namespace="${NS}" \
+                --timeout=180s; then
+              echo "✅ ${NS} — rollout complete"
+            else
+              echo "❌ ${NS} — rollout FAILED"
+              FAILED_NS="${FAILED_NS} ${NS}"
+              # Show recent events for debugging
+              kubectl describe deployment bi-platform-app -n "${NS}" | tail -20
+            fi
+          done
+
+          if [ -n "$FAILED_NS" ]; then
+            echo "Deployment failed in: ${FAILED_NS}"
+            exit 1
+          fi
+
+          echo "All namespaces updated successfully ✅"
+
+      # ── Notify on failure ───────────────────────────────────
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed! Review logs above."
+          # Uncomment to add Slack notification:
+          # curl -X POST -H 'Content-type: application/json' \
+          #   --data '{"text":"🚨 BI Platform deploy failed! Check GitHub Actions."}' \
+          #   ${{ secrets.SLACK_WEBHOOK_URL }}

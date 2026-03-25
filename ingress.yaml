@@ -1,0 +1,49 @@
+# =============================================================================
+# Kubernetes Ingress — BI Platform
+# Owner: Jayavarsan (Kubernetes Lead)
+#
+# Routes external HTTPS traffic to the right tenant namespace.
+# Requires nginx-ingress-controller deployed on the cluster.
+#
+# Install ingress controller:
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/aws/deploy.yaml
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bi-platform-ingress
+  annotations:
+    # Use nginx ingress controller
+    kubernetes.io/ingress.class: "nginx"
+    # Redirect HTTP → HTTPS automatically
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Increase timeout for long-running BI queries
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    # Rate limiting (prevents abuse)
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    # TLS cert managed by cert-manager (optional but recommended)
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+spec:
+  # ── TLS ─────────────────────────────────────────────────
+  # tls:
+  #   - hosts:
+  #       - acme.bi-platform.io
+  #     secretName: acme-tls-secret
+
+  # ── Routing rules ────────────────────────────────────────
+  # Each client gets their own subdomain → routed to their namespace's service
+  # Host header is set per-client in their overlay (e.g., acme.bi-platform.io)
+  rules:
+    - host: CLIENT_HOST              # Replaced by client overlay (e.g. acme.bi-platform.io)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bi-platform-svc
+                port:
+                  number: 80

@@ -1,0 +1,132 @@
+# =============================================================================
+# Kubernetes Deployment — BI Platform
+# Owner: Jayavarsan (Kubernetes Lead)
+#
+# This is the BASE manifest. Per-client overlays customize it.
+# Applied via:  kubectl apply -k k8s/overlays/client-acme/
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bi-platform-app
+  # namespace is set by each client overlay (e.g., client-acme)
+  labels:
+    app: bi-platform-app
+    component: backend
+    managed-by: github-actions
+spec:
+  # ── Replicas ──────────────────────────────────────────────
+  replicas: 2                   # Minimum 2 for zero-downtime rolling updates
+
+  selector:
+    matchLabels:
+      app: bi-platform-app
+
+  # ── Rolling Update Strategy ───────────────────────────────
+  # This is how zero-downtime is achieved:
+  #   maxUnavailable: 0  → never take a pod down before a new one is up
+  #   maxSurge: 1        → allow 1 extra pod during rollout
+  # Result: old pods drain gradually as new pods pass health checks
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0         # NEVER go below desired replica count
+      maxSurge: 1               # Allow one extra pod during rollout
+
+  template:
+    metadata:
+      labels:
+        app: bi-platform-app
+      annotations:
+        # Forces pod restart on re-deploy even if image tag is same (e.g. "latest")
+        deploy-timestamp: "PLACEHOLDER"   # Overwritten by CI/CD
+
+    spec:
+      # ── Security context ────────────────────────────────
+      securityContext:
+        runAsNonRoot: true          # Pod must run as non-root
+        runAsUser: 1000             # UID 1000 = appuser in Dockerfile
+
+      # ── Graceful shutdown ────────────────────────────────
+      # Give the app time to finish in-flight requests before killing
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: bi-platform-app
+          # Image is overridden by CD pipeline:
+          #   kubectl set image deployment/bi-platform-app bi-platform-app=<new-image>
+          image: REGISTRY/bi-platform:latest   # Replaced by CD
+
+          ports:
+            - containerPort: 5000
+              name: http
+
+          # ── Environment variables ──────────────────────
+          # Base env vars — overridden per client in overlays/
+          env:
+            - name: ENVIRONMENT
+              value: "production"
+            - name: PORT
+              value: "5000"
+            # CLIENT_ID is set in each client's configmap/overlay
+            - name: CLIENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: client-config
+                  key: CLIENT_ID
+
+          # ── Resource limits ────────────────────────────
+          # Always set limits to prevent noisy-neighbor issues in multi-tenant
+          resources:
+            requests:
+              cpu:    "100m"         # 0.1 CPU core guaranteed
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"         # Max 0.5 CPU core
+              memory: "256Mi"
+
+          # ── Liveness probe ─────────────────────────────
+          # If this fails 3 times → Kubernetes RESTARTS the pod
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15   # Wait for app to start
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          # ── Readiness probe ────────────────────────────
+          # If this fails → Kubernetes STOPS sending traffic (no restart)
+          # This is what enables zero-downtime: new pods only receive
+          # traffic after passing readiness, old pods drain first.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # ── Security context per container ─────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # ── Volume mounts ──────────────────────────────
+          volumeMounts:
+            - name: tmp-dir
+              mountPath: /tmp         # Writable /tmp for gunicorn workers
+
+      # ── Volumes ───────────────────────────────────────────
+      volumes:
+        - name: tmp-dir
+          emptyDir: {}               # Ephemeral in-memory tmp directory
+
+      # ── Image pull from private ECR ───────────────────────
+      imagePullSecrets:
+        - name: ecr-registry-secret  # Created during cluster setup

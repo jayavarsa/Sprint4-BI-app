@@ -1,0 +1,26 @@
+# =============================================================================
+# Kubernetes Service — BI Platform
+# Owner: Jayavarsan (Kubernetes Lead)
+#
+# Exposes the Deployment internally within the cluster.
+# External access is handled by the Ingress.
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: bi-platform-svc
+  labels:
+    app: bi-platform-app
+spec:
+  # ClusterIP = internal-only (Ingress routes external traffic to this)
+  type: ClusterIP
+
+  selector:
+    app: bi-platform-app        # Matches Deployment pod labels
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80                  # Port the Service listens on (inside cluster)
+      targetPort: 5000          # Port the container listens on
