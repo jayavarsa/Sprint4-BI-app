@@ -106,23 +106,8 @@ bi-devops-platform/
 
 ---
 
-## 3. Team Responsibilities
 
-| Member | Role | Files Owned |
-|--------|------|-------------|
-| **Chaithanya** | CI/CD Lead | `.github/workflows/ci.yml`, `.github/workflows/cd.yml`, `scripts/setup_aws.sh` |
-| **Jayavarsan** | Kubernetes Lead | `k8s/base/*`, `k8s/overlays/*`, `scripts/onboard_client.sh` |
-| **Premapriya** | Containerization & QA | `docker/Dockerfile`, `.dockerignore`, `docker-compose.yml`, `app/tests/*` |
 
-### Week-by-Week Plan
-```
-Week 1: Premapriya — Finalize app + Dockerfile + local tests pass
-Week 2: Chaithanya — GitHub Actions CI working end-to-end (ECR push)
-Week 3: Jayavarsan — EKS cluster up, manifests applied, 2 clients live
-Week 4: All        — CD automation, onboarding script, demo dry-run
-```
-
----
 
 ## 4. Prerequisites
 
