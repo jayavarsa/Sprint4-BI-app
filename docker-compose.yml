@@ -1,0 +1,52 @@
+# =============================================================================
+# docker-compose.yml — Local Development
+# Owner: Premapriya (Containerization & QA)
+#
+# Run the BI platform locally to test before pushing.
+# Usage:
+#   docker-compose up --build            # Build and start
+#   docker-compose up -d                 # Detached mode
+#   docker-compose down                  # Stop and remove
+# =============================================================================
+
+version: "3.9"
+
+services:
+  # ── BI App (simulates client-acme) ──────────────────────────
+  bi-app-acme:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        APP_VERSION: "local-dev"
+        BUILD_DATE: "2024-01-01"
+        GIT_COMMIT: "local"
+    image: bi-platform:local
+    container_name: bi-app-acme
+    ports:
+      - "5001:5000"           # Access at http://localhost:5001
+    environment:
+      - CLIENT_ID=acme
+      - ENVIRONMENT=development
+      - APP_VERSION=local-dev
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── BI App (simulates client-globex) ─────────────────────────
+  bi-app-globex:
+    image: bi-platform:local
+    container_name: bi-app-globex
+    depends_on:
+      - bi-app-acme            # Ensures image is built first
+    ports:
+      - "5002:5000"           # Access at http://localhost:5002
+    environment:
+      - CLIENT_ID=globex
+      - ENVIRONMENT=development
+      - APP_VERSION=local-dev
+    restart: unless-stopped
